@@ -19,7 +19,7 @@ Each row has:
 - The file name.
 - The last score, or "No score yet".
 
-A score line is `score / 4` plus `widen`, `layout`, `orientation`, and `fidelity`. What those four numbers mean is in `README.md`.
+A score line is `score / 4` plus `widen`, `layout`, `orientation`, and `fidelity`. A component below 1 is drawn in red. What those four numbers mean is in `README.md`. Double-click a thumbnail to open its `.png` at full size. SolidWorks is not started for that.
 
 The thumbnail border follows the saved score:
 

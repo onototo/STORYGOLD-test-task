@@ -66,63 +66,84 @@ def border_color(envelope: dict | None) -> str | None:
     return "#c62828"
 
 
-def format_score(envelope: dict) -> str:
-    subs = envelope.get("subscores") or {}
-    bits = "  ".join(f"{name} {subs.get(name, 0):.2f}" for name in ("widen", "layout", "orientation", "fidelity"))
-    return f"{envelope.get('score', 0):.2f} / {envelope.get('max_score', 4)}    {bits}"
+COMPONENTS = ("widen", "layout", "orientation", "fidelity")
+PAGE = "#f3f4f6"
+CARD = "#ffffff"
+LINE = "#e3e5e8"
+INK = "#1c1f24"
+MUTED = "#5c6570"
+SHORT = "#b42318"
+OK = "#1b7f3a"
+CHIP_OK = "#e8f6ee"
+CHIP_BAD = "#fdecea"
+FONT = "Segoe UI"
 
 
 class Launcher(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("PlayStation controller harness")
-        self.geometry("980x820")
+        self.geometry("1080x860")
+        self.minsize(860, 560)
+        self.configure(bg=PAGE)
         self.scores = load_scores()
         self.folder = TASK_ROOT if TASK_ROOT.is_dir() else HERE
         self._photos: list[tk.PhotoImage] = []
         self._rows: list[dict] = []
         self._busy = False
+        style = ttk.Style(self)
+        style.configure("TButton", padding=(14, 7), font=(FONT, 10))
+        style.configure("TLabel", background=PAGE, foreground=INK, font=(FONT, 10))
+        style.configure("TFrame", background=PAGE)
 
         self._build()
         self.refresh_dependencies()
         self.reload_parts()
 
     def _build(self) -> None:
-        deps = ttk.LabelFrame(self, text="pywin32")
-        deps.pack(fill="x", padx=8, pady=8)
-        self.dep_status = ttk.Label(deps, text="")
-        self.dep_status.pack(anchor="w", padx=8, pady=(6, 2))
-        self.missing_box = ttk.Frame(deps)
-        ttk.Label(self.missing_box, text=f"Missing: {PIP_PACKAGE}").pack(anchor="w")
-        self.install_button = ttk.Button(
-            self.missing_box, text="Install", command=self.install_pywin32
-        )
-        self.install_button.pack(anchor="w", pady=(4, 0))
+        header = tk.Frame(self, bg=PAGE)
+        header.pack(fill="x", padx=20, pady=(16, 8))
+        tk.Label(header, text="Controller harness", bg=PAGE, fg=INK, font=(FONT, 18, "bold")).pack(anchor="w")
+        tk.Label(
+            header,
+            text="Tick the parts to grade. Double-click a picture to open it.",
+            bg=PAGE, fg=MUTED, font=(FONT, 10),
+        ).pack(anchor="w", pady=(2, 0))
 
-        folder_row = ttk.Frame(self)
-        folder_row.pack(fill="x", padx=8)
+        deps = tk.Frame(self, bg=CARD, highlightthickness=1, highlightbackground=LINE, padx=14, pady=10)
+        deps.pack(fill="x", padx=20, pady=(4, 8))
+        self.dep_status = tk.Label(deps, text="", bg=CARD, fg=INK, font=(FONT, 10), anchor="w")
+        self.dep_status.pack(side="left", fill="x", expand=True)
+        self.missing_box = tk.Frame(deps, bg=CARD)
+        tk.Label(self.missing_box, text=f"Missing {PIP_PACKAGE}", bg=CARD, fg=SHORT, font=(FONT, 10)).pack(side="left")
+        self.install_button = ttk.Button(self.missing_box, text="Install", command=self.install_pywin32)
+        self.install_button.pack(side="left", padx=(12, 0))
+
+        folder_row = tk.Frame(self, bg=PAGE)
+        folder_row.pack(fill="x", padx=20, pady=(0, 8))
         ttk.Button(folder_row, text="Choose folder", command=self.choose_folder).pack(side="left")
-        self.folder_label = ttk.Label(folder_row, text="")
-        self.folder_label.pack(side="left", padx=8)
+        self.folder_label = tk.Label(folder_row, text="", bg=PAGE, fg=MUTED, font=(FONT, 9), anchor="w")
+        self.folder_label.pack(side="left", fill="x", expand=True, padx=12)
 
-        list_frame = ttk.Frame(self)
-        list_frame.pack(fill="both", expand=True, padx=8, pady=8)
-        self.canvas = tk.Canvas(list_frame, highlightthickness=0)
+        list_frame = tk.Frame(self, bg=PAGE)
+        list_frame.pack(fill="both", expand=True, padx=20, pady=(0, 8))
+        self.canvas = tk.Canvas(list_frame, bg=PAGE, highlightthickness=0, bd=0)
         scroll = ttk.Scrollbar(list_frame, orient="vertical", command=self.canvas.yview)
-        self.parts = ttk.Frame(self.canvas)
+        self.parts = tk.Frame(self.canvas, bg=PAGE)
         self.parts.bind("<Configure>", lambda _e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-        self.canvas.create_window((0, 0), window=self.parts, anchor="nw")
+        self._canvas_window = self.canvas.create_window((0, 0), window=self.parts, anchor="nw")
+        self.canvas.bind("<Configure>", lambda event: self.canvas.itemconfigure(self._canvas_window, width=event.width))
         self.canvas.configure(yscrollcommand=scroll.set)
         self.canvas.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
         self.canvas.bind_all("<MouseWheel>", self._on_wheel)
 
-        actions = ttk.Frame(self)
-        actions.pack(fill="x", padx=8, pady=(0, 8))
+        actions = tk.Frame(self, bg=CARD, highlightthickness=1, highlightbackground=LINE, padx=14, pady=10)
+        actions.pack(fill="x", padx=20, pady=(0, 16))
         self.run_button = ttk.Button(actions, text="Run harness", command=self.run_selected)
         self.run_button.pack(side="left")
-        self.progress = ttk.Label(actions, text="")
-        self.progress.pack(side="left", padx=8)
+        self.progress = tk.Label(actions, text="", bg=CARD, fg=MUTED, font=(FONT, 10), anchor="w")
+        self.progress.pack(side="left", fill="x", expand=True, padx=14)
 
     def _on_wheel(self, event) -> None:
         self.canvas.yview_scroll(int(-event.delta / 120), "units")
@@ -187,20 +208,38 @@ class Launcher(tk.Tk):
             self._add_row(part)
 
     def _add_row(self, part: Path) -> None:
-        frame = ttk.Frame(self.parts)
-        frame.pack(fill="x", pady=10)
+        card = tk.Frame(
+            self.parts, bg=CARD, highlightthickness=1, highlightbackground=LINE, padx=14, pady=12
+        )
+        card.pack(fill="x", pady=(0, 10))
+        card.columnconfigure(2, weight=1)
         checked = tk.BooleanVar(value=False)
-        ttk.Checkbutton(frame, variable=checked).pack(side="left", padx=4)
-        photo = self._thumbnail(sibling_png(part))
-        icon = tk.Frame(frame, bd=0, highlightthickness=0)
-        icon.pack(side="left")
-        tk.Label(icon, image=photo, bd=0).pack()
-        self._paint_border(icon, self.scores.get(str(part.resolve())))
-        text = ttk.Frame(frame)
-        text.pack(side="left", fill="x", expand=True, padx=8)
-        ttk.Label(text, text=part.name).pack(anchor="w")
-        score = ttk.Label(text, text=self._score_text(part))
+        tk.Checkbutton(
+            card, variable=checked, bg=CARD, activebackground=CARD, highlightthickness=0, bd=0
+        ).grid(row=0, column=0, sticky="w", padx=(0, 12))
+        png = sibling_png(part)
+        photo = self._thumbnail(png)
+        icon = tk.Frame(card, bg=CARD, bd=0, highlightthickness=0)
+        icon.grid(row=0, column=1, sticky="w")
+        picture = tk.Label(icon, image=photo, bd=0, bg=CARD, cursor="hand2" if png else "")
+        picture.pack()
+        picture.bind("<Double-Button-1>", lambda _event, path=png: self._open_png(path))
+        saved = self.scores.get(str(part.resolve()))
+        envelope = saved if isinstance(saved, dict) else None
+        self._paint_border(icon, envelope)
+        body = tk.Frame(card, bg=CARD)
+        body.grid(row=0, column=2, sticky="w", padx=(18, 4))
+        tk.Label(body, text=part.stem, bg=CARD, fg=INK, font=(FONT, 13, "bold"), anchor="w").pack(anchor="w")
+        try:
+            place = str(part.parent.relative_to(self.folder))
+        except ValueError:
+            place = str(part.parent)
+        if place == ".":
+            place = part.parent.name
+        tk.Label(body, text=place, bg=CARD, fg=MUTED, font=(FONT, 9), anchor="w").pack(anchor="w", pady=(2, 12))
+        score = tk.Frame(body, bg=CARD)
         score.pack(anchor="w")
+        self._show_score(score, envelope)
         self._rows.append({"path": part, "checked": checked, "score": score, "icon": icon})
 
     def _thumbnail(self, png: Path | None) -> tk.PhotoImage:
@@ -225,11 +264,52 @@ class Launcher(tk.Tk):
             return
         icon.configure(highlightthickness=4, highlightbackground=color, highlightcolor=color)
 
-    def _score_text(self, part: Path) -> str:
-        saved = self.scores.get(str(part.resolve()))
-        if not isinstance(saved, dict) or "score" not in saved:
-            return "No score yet"
-        return format_score(saved)
+    def _show_score(self, holder: tk.Frame, envelope: dict | None) -> None:
+        for child in holder.winfo_children():
+            child.destroy()
+        holder.configure(bg=CARD)
+        if not isinstance(envelope, dict) or "score" not in envelope:
+            tk.Label(holder, text="No score yet", bg=CARD, fg=MUTED, font=(FONT, 10)).pack(anchor="w")
+            return
+        tk.Label(
+            holder,
+            text=f"{float(envelope.get('score') or 0):.2f} / {envelope.get('max_score', 4)}",
+            bg=CARD, fg=INK, font=(FONT, 12, "bold"),
+        ).pack(side="left", padx=(0, 14))
+        subs = envelope.get("subscores") or {}
+        for name in COMPONENTS:
+            value = float(subs.get(name) or 0)
+            short = value < 0.995
+            tk.Label(
+                holder,
+                text=f"{name}  {value:.2f}",
+                bg=CHIP_BAD if short else CHIP_OK,
+                fg=SHORT if short else OK,
+                font=(FONT, 9),
+                padx=8,
+                pady=4,
+            ).pack(side="left", padx=(0, 6))
+
+    def _show_error(self, holder: tk.Frame, message: str) -> None:
+        for child in holder.winfo_children():
+            child.destroy()
+        tk.Label(
+            holder, text=message, bg=CARD, fg=SHORT, font=(FONT, 10),
+            wraplength=460, justify="left",
+        ).pack(anchor="w")
+
+    def _open_png(self, png: Path | None) -> None:
+        if png is None or not png.is_file():
+            return
+        try:
+            image = tk.PhotoImage(file=str(png))
+        except tk.TclError:
+            return
+        window = tk.Toplevel(self)
+        window.title(png.name)
+        label = tk.Label(window, image=image, bd=0)
+        label.pack()
+        window.image = image
 
     def _sync_run_button(self) -> None:
         state = "disabled" if self._busy or pywin32_status() is not None else "normal"
@@ -264,14 +344,13 @@ class Launcher(tk.Tk):
                 try:
                     envelope = harness.grade_path(path)
                 except Exception as exc:
-                    self.after(0, lambda label=row["score"], err=str(exc): label.configure(text=err))
+                    self.after(0, lambda holder=row["score"], err=str(exc): self._show_error(holder, err))
                     continue
                 key = str(path.resolve())
                 self.scores[key] = envelope
                 save_scores(self.scores)
-                shown = format_score(envelope)
-                self.after(0, lambda label=row["score"], icon=row["icon"], text=shown, env=envelope: (
-                    label.configure(text=text),
+                self.after(0, lambda holder=row["score"], icon=row["icon"], env=envelope: (
+                    self._show_score(holder, env),
                     self._paint_border(icon, env),
                 ))
         finally:
