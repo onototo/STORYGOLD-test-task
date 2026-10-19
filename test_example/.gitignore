@@ -11,3 +11,5 @@ venv/
 *.step
 *.stl
 *.ply
+# Local harness scores written by tests/task/harness/gui.py
+SolidWorks/1_playstation_controller/tests/task/harness/scores.json
