@@ -234,7 +234,29 @@ def _port_side(bodies: list[dict], plane: float | None, capture: dict) -> float:
     return 1.0 if plane is not None else 0.0
 
 
-def score_fidelity(bodies: list[dict], capture: dict) -> float:
+def _stick_score(bodies: list[dict], baseline: dict) -> tuple[float, float | None]:
+    """How closely the joystick caps still match the seed volume and inertia."""
+    by_id = {body["id"]: body for body in baseline["bodies"]}
+    refs = [by_id[body_id] for body_id in baseline["roles"]["sticks"]]
+    reference = refs[0]
+    if "inertia_com" not in reference:
+        return 1.0, None
+    candidates = [
+        body for body in bodies
+        if "inertia_com" in body and measure.rel_diff(body["volume_m3"], reference["volume_m3"]) <= 0.02
+    ]
+    if len(candidates) < 2:
+        return 0.0, None
+    errors = []
+    for body in candidates[:2]:
+        for key in ("Ixx", "Iyy", "Izz"):
+            base = abs(reference["inertia_com"][key]) or 1e-30
+            errors.append(abs(body["inertia_com"][key] - reference["inertia_com"][key]) / base)
+    error = sum(errors) / len(errors)
+    return near(error, 0.0, 0.02), error
+
+
+def score_fidelity(bodies: list[dict], capture: dict, baseline: dict | None = None) -> float:
     errors = int(capture.get("rebuild", {}).get("errors") or 0)
     health = 1.0 / (1.0 + errors)
     overlap = float(capture.get("interference", {}).get("total_volume_m3") or 0.0)
@@ -243,7 +265,10 @@ def score_fidelity(bodies: list[dict], capture: dict) -> float:
     else:
         overlap_score = near(overlap, 0.0, INTERFERENCE_TOL_M3)
     housing_score = _housing_faces(bodies)
-    return min(health, overlap_score, housing_score)
+    stick_score = 1.0
+    if baseline is not None:
+        stick_score, _error = _stick_score(bodies, baseline)
+    return min(health, overlap_score, housing_score, stick_score)
 
 
 def _housing_faces(bodies: list[dict]) -> float:
@@ -271,25 +296,91 @@ def _housing_faces(bodies: list[dict]) -> float:
     return clamp(1.0 - (delta - 2) / 6.0)
 
 
+def _housing_face_delta(bodies: list[dict]) -> int | None:
+    deltas = []
+    for volume, faces in REFERENCE_HOUSINGS:
+        matches = [
+            body
+            for body in bodies
+            if measure.rel_diff(body["volume_m3"], volume) <= 0.002
+        ]
+        if not matches:
+            continue
+        closest = min(matches, key=lambda body: abs(body["face_count"] - faces))
+        deltas.append(abs(closest["face_count"] - faces))
+    if not deltas:
+        return None
+    return max(deltas)
+
+
+def _evidence(capture: dict, pairs: dict, grips: dict, diamonds: list[dict]) -> dict:
+    """Raw measurements behind the 0-1 scores, plus the feature-tree and open trace."""
+    rebuild = capture.get("rebuild") or {}
+    classes = {"rebuild": 0, "dangling": 0, "sketch": 0}
+    names = []
+    for name, faults in (rebuild.get("feature_errors") or {}).items():
+        for fault in faults:
+            kind = fault.get("kind")
+            if kind in classes:
+                classes[kind] += 1
+                if len(names) < 4:
+                    names.append(f"{name} ({kind})")
+    grip_mm = {}
+    for role, spec in pairs.items():
+        actual = grips.get(role)
+        grip_mm[role] = {
+            "actual_mm": None if actual is None else round(actual * 1000, 2),
+            "target_mm": round((spec["separation_m"] + WIDEN_M) * 1000, 2),
+        }
+    left = min(diamonds, key=lambda group: group["center_x"]) if diamonds else None
+    overlap = float((capture.get("interference") or {}).get("total_volume_m3") or 0.0)
+    trace = capture.get("trace") or {}
+    sketches = capture.get("sketches") or {}
+    stick_score, stick_error = _stick_score(capture.get("bodies") or [], measure.load_baseline())
+    return {
+        "grips_mm": grip_mm,
+        "dpad_small_faces": None if left is None else int(left["small_faces"]),
+        "dpad_small_faces_target": REFERENCE_DPAD_SMALL_FACES,
+        "housing_face_delta": _housing_face_delta(capture.get("bodies") or []),
+        "rebuild_errors": int(rebuild.get("errors") or 0),
+        "rebuild_warnings": int(rebuild.get("warnings") or 0),
+        "error_classes": classes,
+        "error_features": names,
+        "interference_mm3": round(overlap * 1e9, 3),
+        "repair": bool(trace.get("repair")),
+        "open_errors": int(trace.get("errors") or 0),
+        "sketches_under": int(sketches.get("under") or 0),
+        "sketches_over": int(sketches.get("over") or 0),
+        "sketch_under_names": sketches.get("under_names") or [],
+        "sketch_over_names": sketches.get("over_names") or [],
+        "stick_inertia_error": None if stick_error is None else round(stick_error, 6),
+        "stick_score": round(stick_score, 4),
+    }
+
+
 def score_capture(capture: dict, baseline: dict | None = None) -> dict:
     baseline = baseline or measure.load_baseline()
     pairs = _baseline_pairs(baseline)
     bodies = capture.get("bodies") or []
-    plane, _grips = _plane_and_grips(bodies, pairs)
+    plane, grips = _plane_and_grips(bodies, pairs)
     diamonds = _diamonds(bodies, pairs)
     subscores = {
         "widen": score_widen(bodies, capture.get("global", {}).get("width_m", 0.0), baseline, pairs),
         "layout": score_layout(diamonds, plane),
         "orientation": score_orientation(bodies, diamonds, plane, capture),
-        "fidelity": score_fidelity(bodies, capture),
+        "fidelity": score_fidelity(bodies, capture, baseline),
     }
     subscores = {name: _snap(value) for name, value in subscores.items()}
     score = round(sum(subscores.values()), 4)
+    reward = round(score / MAX_SCORE, 4)
     return {
+        "schema": "ps-controller-reward/1",
+        "reward": reward,
         "score": score,
         "max_score": MAX_SCORE,
         "passed": score >= MAX_SCORE - 1e-3,
         "subscores": subscores,
+        "evidence": _evidence(capture, pairs, grips, diamonds),
     }
 
 

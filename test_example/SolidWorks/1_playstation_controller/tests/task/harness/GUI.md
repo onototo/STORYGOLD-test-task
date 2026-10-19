@@ -14,12 +14,12 @@ Choose folder starts in this task (`environment`, `solution`, and `examples`, in
 
 Each row has:
 
-- A checkbox. Only ticked rows are graded. Leave a row clear to skip it.
+- A checkbox. Only ticked rows are graded. Leave a row clear to skip it. Select all above the list ticks or clears every row.
 - A thumbnail, the `.png` saved beside that part. If there is no picture, the space stays empty.
 - The file name.
 - The last score, or "No score yet".
 
-A score line is `score / 4` plus `widen`, `layout`, `orientation`, and `fidelity`. A component below 1 is drawn in red. What those four numbers mean is in `README.md`. Double-click a thumbnail to open its `.png` at full size. SolidWorks is not started for that.
+A score line is `4.00/4.00`, then the date and time of that run, a `reward` from 0 to 1 for an outside trainer, plus `widen`, `layout`, `orientation`, and `fidelity`. A component below 1 is drawn in red. What those four numbers mean is in `README.md`. To the right of the score, the window shows the measurements behind it: grip separations against the 15 mm target, D-pad arrow faces, rebuild errors split into rebuild, dangling references and sketch faults, sketches that are under- or over-defined, whether the joystick caps still match the seed, extra shell faces, overlap, and whether the file had to be repaired to open. `python replay_scores.py` checks that the same saved measurement always yields the same reward, without SolidWorks. Double-click a thumbnail to open its `.png` at full size. SolidWorks is not started for that.
 
 The thumbnail border follows the saved score:
 

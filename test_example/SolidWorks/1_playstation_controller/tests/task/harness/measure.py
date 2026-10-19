@@ -168,6 +168,7 @@ class Session:
         self.sw = connect()
         self.modeler = get_modeler(self.sw)
         self._show_errors = None
+        self.last_open = {"errors": 0, "warnings": 0, "repair": False}
 
     def __enter__(self):
         try:
@@ -202,7 +203,13 @@ class Session:
             errors,
             warnings,
         )
-        if doc is None and int(errors.value) & 2097152:
+        repair = doc is None and int(errors.value) & 2097152
+        self.last_open = {
+            "errors": int(errors.value),
+            "warnings": int(warnings.value),
+            "repair": bool(repair),
+        }
+        if repair:
             log("file needs repair; opening through the SolidWorks file dialog")
             doc = self._open_via_dialog(path)
         if doc is None:
@@ -576,6 +583,23 @@ def _walk_features(doc) -> list:
     return found
 
 
+DANGLING_CODES = {43, 51, 63, 64}
+
+
+def _error_class(code: int, type_name: str, is_warning: bool) -> str:
+    """Split a feature fault into the three kinds an eval report needs.
+
+    Dangling references, sketch faults, and everything else that blocked a rebuild.
+    """
+    if is_warning:
+        return "warning"
+    if code in DANGLING_CODES:
+        return "dangling"
+    if "Sketch" in type_name:
+        return "sketch"
+    return "rebuild"
+
+
 def rebuild_census(doc) -> dict:
     # Do not rebuild. SolidWorks 2024 regenerates the housing fillet and
     # drops 24 tiny faces, so a forced rebuild no longer matches the seed.
@@ -592,14 +616,19 @@ def rebuild_census(doc) -> dict:
             continue
         if code == 0:
             continue
+        try:
+            type_name = str(invoke(feat, 103))
+        except Exception:
+            type_name = ""
         name = str(api(feat, "Name"))
+        kind = _error_class(code, type_name, is_warning)
         if is_warning:
             warnings += 1
-            kind = "warning"
         else:
             errors += 1
-            kind = "error"
-        detail.setdefault(name, []).append({"code": code, "kind": kind})
+        detail.setdefault(name, []).append(
+            {"code": code, "kind": kind, "type": type_name}
+        )
     counted = len(features)
     try:
         counted = int(invoke(doc, SW_DISPID_FEATURE_COUNT))
@@ -676,6 +705,56 @@ def interference(modeler, roles: dict, id_to_com: dict) -> dict:
     return {"tested_pairs": len(tests), "pairs": hits, "total_volume_m3": total}
 
 
+def sketch_census(doc) -> dict:
+    """Count sketches that are under- or over-defined even when the part still opens."""
+    under = over = full = other = 0
+    under_names: list[str] = []
+    over_names: list[str] = []
+    try:
+        features = _walk_features(doc)
+    except Exception as exc:
+        return {"under": 0, "over": 0, "full": 0, "other": 0, "under_names": [], "over_names": [], "error": str(exc)}
+    for feat in features:
+        try:
+            type_name = str(invoke(feat, 103))
+        except Exception:
+            continue
+        if type_name not in ("ProfileFeature", "3DProfileFeature"):
+            continue
+        try:
+            raw = invoke(feat, 76)
+        except Exception:
+            continue
+        sketch = wrap(raw)
+        if sketch is None:
+            continue
+        try:
+            status = int(invoke(sketch, 48))
+        except Exception:
+            continue
+        name = str(api(feat, "Name"))
+        if status == 2:
+            under += 1
+            if len(under_names) < 4:
+                under_names.append(name)
+        elif status == 4:
+            over += 1
+            if len(over_names) < 4:
+                over_names.append(name)
+        elif status == 3:
+            full += 1
+        else:
+            other += 1
+    return {
+        "under": under,
+        "over": over,
+        "full": full,
+        "other": other,
+        "under_names": under_names,
+        "over_names": over_names,
+    }
+
+
 def capture_doc(sw, doc, modeler, target_areas: list[float] | None, do_interference: bool) -> dict:
     try:
         sw.CommandInProgress = True
@@ -711,6 +790,7 @@ def capture_doc(sw, doc, modeler, target_areas: list[float] | None, do_interfere
             max(box[5] for box in boxes),
         ]
         census = rebuild_census(doc)
+        sketches = sketch_census(doc)
         stored = [{key: value for key, value in body.items() if key != "faces"} for body in bodies]
         return {
             "plane_x_m": None,
@@ -724,6 +804,7 @@ def capture_doc(sw, doc, modeler, target_areas: list[float] | None, do_interfere
             "light_cluster": None,
             "interference": {"tested_pairs": 0, "pairs": [], "total_volume_m3": 0.0, "skipped": True},
             "rebuild": census,
+            "sketches": sketches,
             "role_error": True,
         }
 
@@ -750,6 +831,7 @@ def capture_doc(sw, doc, modeler, target_areas: list[float] | None, do_interfere
         max(box[5] for box in boxes),
     ]
     census = rebuild_census(doc)
+    sketches = sketch_census(doc)
     log(
         f"features={census['features']} errors={census['errors']} "
         f"warnings={census['warnings']}"
@@ -775,6 +857,7 @@ def capture_doc(sw, doc, modeler, target_areas: list[float] | None, do_interfere
         "light_cluster": cluster,
         "interference": overlaps,
         "rebuild": census,
+        "sketches": sketches,
     }
 
 
@@ -786,7 +869,7 @@ def capture_path(session: Session, path: Path, do_interference: bool = True) -> 
     baseline = load_baseline()
     doc = session.open_part(path)
     try:
-        return capture_doc(
+        capture = capture_doc(
             session.sw,
             doc,
             session.modeler,
@@ -795,6 +878,8 @@ def capture_path(session: Session, path: Path, do_interference: bool = True) -> 
         )
     finally:
         session.close(doc)
+    capture["trace"] = dict(session.last_open)
+    return capture
 
 
 def _names_for(document: dict, ids: list[str]) -> set[str]:

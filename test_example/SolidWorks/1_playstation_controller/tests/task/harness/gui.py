@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -64,6 +65,16 @@ def border_color(envelope: dict | None) -> str | None:
     if envelope.get("passed") or float(envelope.get("score") or 0) >= full - 1e-3:
         return "#2e7d32"
     return "#c62828"
+
+
+def _format_tested_at(value) -> str | None:
+    if not value:
+        return None
+    try:
+        moment = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return moment.strftime("%d.%m.%Y %H:%M")
 
 
 COMPONENTS = ("widen", "layout", "orientation", "fidelity")
@@ -124,6 +135,20 @@ class Launcher(tk.Tk):
         ttk.Button(folder_row, text="Choose folder", command=self.choose_folder).pack(side="left")
         self.folder_label = tk.Label(folder_row, text="", bg=PAGE, fg=MUTED, font=(FONT, 9), anchor="w")
         self.folder_label.pack(side="left", fill="x", expand=True, padx=12)
+        self._select_all = tk.BooleanVar(value=False)
+        self._syncing_checks = False
+        tk.Checkbutton(
+            folder_row,
+            text="Select all",
+            variable=self._select_all,
+            command=self._toggle_all,
+            bg=PAGE,
+            activebackground=PAGE,
+            fg=INK,
+            font=(FONT, 10),
+            highlightthickness=0,
+            bd=0,
+        ).pack(side="right")
 
         list_frame = tk.Frame(self, bg=PAGE)
         list_frame.pack(fill="both", expand=True, padx=20, pady=(0, 8))
@@ -144,6 +169,22 @@ class Launcher(tk.Tk):
         self.run_button.pack(side="left")
         self.progress = tk.Label(actions, text="", bg=CARD, fg=MUTED, font=(FONT, 10), anchor="w")
         self.progress.pack(side="left", fill="x", expand=True, padx=14)
+
+    def _toggle_all(self) -> None:
+        if self._syncing_checks:
+            return
+        self._syncing_checks = True
+        value = bool(self._select_all.get())
+        for row in self._rows:
+            row["checked"].set(value)
+        self._syncing_checks = False
+
+    def _sync_select_all(self) -> None:
+        if self._syncing_checks:
+            return
+        self._syncing_checks = True
+        self._select_all.set(bool(self._rows) and all(row["checked"].get() for row in self._rows))
+        self._syncing_checks = False
 
     def _on_wheel(self, event) -> None:
         self.canvas.yview_scroll(int(-event.delta / 120), "units")
@@ -193,6 +234,9 @@ class Launcher(tk.Tk):
 
     def reload_parts(self) -> None:
         self.folder_label.configure(text=str(self.folder))
+        self._syncing_checks = True
+        self._select_all.set(False)
+        self._syncing_checks = False
         for child in self.parts.winfo_children():
             child.destroy()
         self._photos.clear()
@@ -215,7 +259,13 @@ class Launcher(tk.Tk):
         card.columnconfigure(2, weight=1)
         checked = tk.BooleanVar(value=False)
         tk.Checkbutton(
-            card, variable=checked, bg=CARD, activebackground=CARD, highlightthickness=0, bd=0
+            card,
+            variable=checked,
+            command=self._sync_select_all,
+            bg=CARD,
+            activebackground=CARD,
+            highlightthickness=0,
+            bd=0,
         ).grid(row=0, column=0, sticky="w", padx=(0, 12))
         png = sibling_png(part)
         photo = self._thumbnail(png)
@@ -240,7 +290,12 @@ class Launcher(tk.Tk):
         score = tk.Frame(body, bg=CARD)
         score.pack(anchor="w")
         self._show_score(score, envelope)
-        self._rows.append({"path": part, "checked": checked, "score": score, "icon": icon})
+        evidence = tk.Frame(card, bg=CARD)
+        evidence.grid(row=0, column=3, sticky="e", padx=(16, 2))
+        self._show_evidence(evidence, envelope)
+        self._rows.append({
+            "path": part, "checked": checked, "score": score, "icon": icon, "evidence": evidence,
+        })
 
     def _thumbnail(self, png: Path | None) -> tk.PhotoImage:
         blank = tk.PhotoImage(width=THUMB, height=THUMB)
@@ -271,17 +326,32 @@ class Launcher(tk.Tk):
         if not isinstance(envelope, dict) or "score" not in envelope:
             tk.Label(holder, text="No score yet", bg=CARD, fg=MUTED, font=(FONT, 10)).pack(anchor="w")
             return
+        header = tk.Frame(holder, bg=CARD)
+        header.pack(anchor="w")
         tk.Label(
-            holder,
-            text=f"{float(envelope.get('score') or 0):.2f} / {envelope.get('max_score', 4)}",
+            header,
+            text=f"{float(envelope.get('score') or 0):.2f}/{float(envelope.get('max_score') or 4):.2f}",
             bg=CARD, fg=INK, font=(FONT, 12, "bold"),
-        ).pack(side="left", padx=(0, 14))
+        ).pack(side="left", padx=(0, 10))
+        tested = _format_tested_at(envelope.get("tested_at"))
+        if tested:
+            tk.Label(
+                header, text=tested, bg=CARD, fg=MUTED, font=(FONT, 9),
+            ).pack(side="left", padx=(0, 10))
+        if "reward" in envelope:
+            tk.Label(
+                header,
+                text=f"reward {float(envelope['reward']):.2f}",
+                bg=CARD, fg=MUTED, font=(FONT, 9),
+            ).pack(side="left")
+        chips = tk.Frame(holder, bg=CARD)
+        chips.pack(anchor="w", pady=(8, 0))
         subs = envelope.get("subscores") or {}
         for name in COMPONENTS:
             value = float(subs.get(name) or 0)
             short = value < 0.995
             tk.Label(
-                holder,
+                chips,
                 text=f"{name}  {value:.2f}",
                 bg=CHIP_BAD if short else CHIP_OK,
                 fg=SHORT if short else OK,
@@ -297,6 +367,68 @@ class Launcher(tk.Tk):
             holder, text=message, bg=CARD, fg=SHORT, font=(FONT, 10),
             wraplength=460, justify="left",
         ).pack(anchor="w")
+
+    def _show_evidence(self, holder: tk.Frame, envelope: dict | None) -> None:
+        for child in holder.winfo_children():
+            child.destroy()
+        holder.configure(bg=CARD)
+        evidence = envelope.get("evidence") if isinstance(envelope, dict) else None
+        if not evidence:
+            return
+        lines = []
+        grips = evidence.get("grips_mm") or {}
+        for role in ("sticks", "triggers", "bumpers"):
+            item = grips.get(role) or {}
+            actual, target = item.get("actual_mm"), item.get("target_mm")
+            if actual is None or target is None:
+                lines.append((f"{role}  —", MUTED))
+            else:
+                short = abs(actual - target) > 0.5
+                lines.append((f"{role}  {actual:.1f} / {target:.1f} mm", SHORT if short else MUTED))
+        faces = evidence.get("dpad_small_faces")
+        target_faces = evidence.get("dpad_small_faces_target")
+        if faces is None:
+            lines.append(("D-pad faces  —", MUTED))
+        else:
+            short = abs(int(faces) - int(target_faces)) > 4
+            lines.append((f"D-pad faces  {faces} / {target_faces}", SHORT if short else MUTED))
+        errors = int(evidence.get("rebuild_errors") or 0)
+        classes = evidence.get("error_classes") or {}
+        if errors:
+            lines.append((
+                f"Rebuild {errors}   dangling {classes.get('dangling', 0)}   sketch {classes.get('sketch', 0)}",
+                SHORT,
+            ))
+        else:
+            lines.append(("Rebuild  0", MUTED))
+        delta = evidence.get("housing_face_delta")
+        if delta:
+            lines.append((f"Shell faces  +{delta}", SHORT if int(delta) > 2 else MUTED))
+        if evidence.get("repair"):
+            lines.append(("Opened with repair", SHORT))
+        under = evidence.get("sketches_under")
+        over = evidence.get("sketches_over")
+        if under is not None or over is not None:
+            under = int(under or 0)
+            over = int(over or 0)
+            if under or over:
+                lines.append((f"Sketches under {under}   over {over}", SHORT))
+            else:
+                lines.append(("Sketches defined", MUTED))
+        stick = evidence.get("stick_score")
+        if stick is not None:
+            if float(stick) < 0.995:
+                lines.append(("Joystick caps differ", SHORT))
+            else:
+                lines.append(("Joystick caps match", MUTED))
+        overlap = float(evidence.get("interference_mm3") or 0)
+        if overlap > 20:
+            lines.append((f"Overlap  {overlap:.1f} mm³", SHORT))
+        names = evidence.get("error_features") or []
+        if names:
+            lines.append((", ".join(names), MUTED))
+        for text, color in lines:
+            tk.Label(holder, text=text, bg=CARD, fg=color, font=(FONT, 9), anchor="e").pack(anchor="e", pady=1)
 
     def _open_png(self, png: Path | None) -> None:
         if png is None or not png.is_file():
@@ -347,11 +479,13 @@ class Launcher(tk.Tk):
                     self.after(0, lambda holder=row["score"], err=str(exc): self._show_error(holder, err))
                     continue
                 key = str(path.resolve())
+                envelope["tested_at"] = datetime.now().isoformat(timespec="minutes")
                 self.scores[key] = envelope
                 save_scores(self.scores)
-                self.after(0, lambda holder=row["score"], icon=row["icon"], env=envelope: (
+                self.after(0, lambda holder=row["score"], icon=row["icon"], facts=row["evidence"], env=envelope: (
                     self._show_score(holder, env),
                     self._paint_border(icon, env),
+                    self._show_evidence(facts, env),
                 ))
         finally:
             pythoncom.CoUninitialize()
